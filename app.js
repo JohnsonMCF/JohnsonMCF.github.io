@@ -807,37 +807,25 @@ const BUILTIN_VERBS = [
 const PERSONS       = ['je','tu','il','nous','vous','ils'];
 const PERSON_LABELS = ['je','tu','il/elle','nous','vous','ils/elles'];
 const TENSES = [
-  'present','imparfait','futur_simple','conditionnel_present',
-  'subjonctif_present','passe_simple',
-  'participe_present','participe_passe',
-  'passe_compose','plus_que_parfait','futur_anterieur',
+  'present','imparfait','passe_compose','futur_simple',
+  'conditionnel_present','subjonctif_present',
+  'plus_que_parfait','futur_anterieur','passe_simple',
   'passe_anterieur','subjonctif_passe','conditionnel_passe',
 ];
 const TENSE_LABELS = {
   present: 'Présent',
   imparfait: 'Imparfait',
+  passe_compose: 'Passé Composé',
   futur_simple: 'Futur Simple',
   conditionnel_present: 'Conditionnel Présent',
   subjonctif_present: 'Subjonctif Présent',
-  passe_simple: 'Passé Simple',
-  participe_present: 'Participe Présent',
-  participe_passe: 'Participe Passé',
-  passe_compose: 'Passé Composé',
   plus_que_parfait: 'Plus-que-parfait',
   futur_anterieur: 'Futur Antérieur',
+  passe_simple: 'Passé Simple',
   passe_anterieur: 'Passé Antérieur',
   subjonctif_passe: 'Subjonctif Passé',
   conditionnel_passe: 'Conditionnel Passé',
 };
-
-// Tenses that are "original" (built from stem, no auxiliary)
-const ORIGINAL_TENSES = new Set([
-  'present','imparfait','futur_simple','conditionnel_present',
-  'subjonctif_present','passe_simple','participe_present','participe_passe',
-]);
-// Tenses that are "compound" (auxiliary + participe passé)
-// (used for picker UI and auxiliary detection)
-
 const AUXILIARIES = ['être','avoir'];
 
 // FIX #3: module-level constant so it's never duplicated
@@ -857,32 +845,24 @@ const ETRE_FORMS = {
 };
 
 const SRS_KEY      = 'frenchSRS_v2';
-const HISTORY_KEY  = 'frenchSRS_history';
 const MASTERY_WEIGHT   = 0.25;
 const MASTERY_MIN_SEEN = 3;
 
-// Default tenses shown on first load (the 6 main ones)
-const DEFAULT_TENSES = ['present','imparfait','passe_compose','futur_simple','conditionnel_present','subjonctif_present'];
-
 // ─── State ───────────────────────────────────────────────────────────────────
 let verbs        = [];
-let customVerbs  = [];
+let customVerbs  = []; // verbs added by user (not in BUILTIN_VERBS)
 let srs          = {};
-let mistakeHistory = []; // persisted across sessions
-let lastMicroFocused = null;
-let advanceTimer = null; // for manual-advance mode
+let lastMicroFocused = null; // track which micro input was last focused
 
 let session = {
   items: [], queue: [], wrongBuffer: [], current: null,
   qCount: 0, qLimit: 0, correctCount: 0,
   timeLimit: 0, timerHandle: null, timerStart: 0,
-  mode: 'byTense', selectedTenses: [...DEFAULT_TENSES],
-  verb: '', chunkSize: 15,
+  mode: 'byTense', tense: '', verb: '', chunkSize: 15,
   strictAccents: true, practiceType: 'write',
-  autoAdvance: false,
-  submitted: false,
-  mistakes: [],
-  lastSessionOpts: null,
+  submitted: false, // FIX #1: guard against double-submit
+  mistakes: [],     // FIX #12: session mistake log
+  lastSessionOpts: null, // FIX: restart same session
 };
 
 // ─── Accent stripping ────────────────────────────────────────────────────────
@@ -949,16 +929,6 @@ function loadSRS() {
     const raw = localStorage.getItem(SRS_KEY);
     if (raw) srs = JSON.parse(raw);
   } catch(_) { srs = {}; }
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (raw) mistakeHistory = JSON.parse(raw);
-  } catch(_) { mistakeHistory = []; }
-}
-
-function saveMistakeHistory() {
-  // Keep last 500 mistakes
-  if (mistakeHistory.length > 500) mistakeHistory = mistakeHistory.slice(-500);
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(mistakeHistory)); } catch(_) {}
 }
 
 // ─── Fisher-Yates shuffle (FIX #24) ─────────────────────────────────────────
@@ -986,16 +956,15 @@ function weightedPick(items) {
 // ─── Build item list ─────────────────────────────────────────────────────────
 function buildItems(opts) {
   let pool = [];
-  const tenseList = opts.mode === 'auxiliary'
-    ? ['present','imparfait','passe_compose','futur_simple','conditionnel_present','subjonctif_present']
-    : (opts.selectedTenses && opts.selectedTenses.length > 0 ? opts.selectedTenses : TENSES);
 
   const addVerb = (v) => {
+    const tenseList = opts.mode === 'auxiliary'
+      ? ['present','imparfait','passe_compose','futur_simple','conditionnel_present','subjonctif_present']
+      : opts.tense ? [opts.tense] : TENSES;
     tenseList.forEach(t => {
       if (!v[t]) return;
-      // participe_present and participe_passe are single-form, stored as [form] array or string
       PERSONS.forEach((p, idx) => {
-        const ans = Array.isArray(v[t]) ? v[t][idx] : null;
+        const ans = v[t][idx];
         if (ans) pool.push({ infinitive: v.infinitive, english: v.english || '', tense: t, person: p, answer: ans });
       });
     });
@@ -1007,19 +976,16 @@ function buildItems(opts) {
     const v = verbs.find(x => x.infinitive === opts.verb);
     if (v) addVerb(v);
   } else if (opts.mode === 'byTense') {
-    // Sort: auxiliaries first, then by SRS weight descending (weakest first in chunk)
     let sorted = [...verbs].sort((a, b) => {
       const aA = AUXILIARIES.includes(a.infinitive) ? -1 : 0;
       const bA = AUXILIARIES.includes(b.infinitive) ? -1 : 0;
       return aA - bA;
     });
     sorted.slice(0, opts.chunkSize).forEach(v => {
-      tenseList.forEach(t => {
-        if (!v[t]) return;
-        PERSONS.forEach((p, idx) => {
-          const ans = Array.isArray(v[t]) ? v[t][idx] : null;
-          if (ans) pool.push({ infinitive: v.infinitive, english: v.english || '', tense: t, person: p, answer: ans });
-        });
+      if (!v[opts.tense]) return;
+      PERSONS.forEach((p, idx) => {
+        const ans = v[opts.tense][idx];
+        if (ans) pool.push({ infinitive: v.infinitive, english: v.english || '', tense: opts.tense, person: p, answer: ans });
       });
     });
   } else {
@@ -1078,54 +1044,48 @@ function detectAuxiliary(tense, personIdx, answer) {
 }
 
 // ─── Session control ─────────────────────────────────────────────────────────
-function getSelectedTenses() {
-  const checked = document.querySelectorAll('#tensePicker input[type=checkbox]:checked');
-  return Array.from(checked).map(cb => cb.value);
-}
-
 function startSession(overrideItems) {
-  const mode          = document.getElementById('selMode').value;
-  const selectedTenses= getSelectedTenses();
-  const verb          = document.getElementById('selVerb').value;
-  const chunkSize     = parseInt(document.getElementById('inChunk').value) || 15;
-  const qLimit        = parseInt(document.getElementById('inQLimit').value) || 0;
-  const timeLimit     = parseInt(document.getElementById('inTime').value) || 0;
-  const strictAccents = document.getElementById('chkAccents').checked;
-  const practiceType  = document.getElementById('selPractice').value;
-  const autoAdvance   = document.getElementById('chkAutoAdvance').checked;
+  const mode         = document.getElementById('selMode').value;
+  const tense        = document.getElementById('selTense').value;
+  const verb         = document.getElementById('selVerb').value;
+  const chunkSize    = parseInt(document.getElementById('inChunk').value) || 15;
+  const qLimit       = parseInt(document.getElementById('inQLimit').value) || 0;
+  const timeLimit    = parseInt(document.getElementById('inTime').value) || 0;
+  const strictAccents= document.getElementById('chkAccents').checked;
+  const practiceType = document.getElementById('selPractice').value;
 
   if (verbs.length === 0) {
-    showToast('No verbs loaded.');
+    showToast('No verbs loaded. Using built-in dataset.');
     return;
   }
 
-  if (mode !== 'auxiliary' && mode !== 'micro' && selectedTenses.length === 0) {
-    showToast('Please select at least one tense.');
+  // FIX #5: validate byTense has a tense selected
+  if (mode === 'byTense' && !tense) {
+    showToast('Please select a tense for "By Tense" mode.');
     return;
   }
 
-  const opts = { mode, selectedTenses, verb, chunkSize, qLimit, timeLimit, strictAccents, practiceType, autoAdvance };
+  const opts = { mode, tense, verb, chunkSize, qLimit, timeLimit, strictAccents, practiceType };
   session.lastSessionOpts = opts;
 
   session.mode = mode;
-  session.selectedTenses = selectedTenses;
+  session.tense = tense;
   session.verb = verb;
   session.chunkSize = chunkSize;
   session.qLimit = qLimit;
   session.timeLimit = timeLimit;
   session.strictAccents = strictAccents;
   session.practiceType = practiceType;
-  session.autoAdvance = autoAdvance;
   session.qCount = 0;
   session.correctCount = 0;
   session.wrongBuffer = [];
   session.submitted = false;
   session.mistakes = [];
 
-  session.items = overrideItems || buildItems({ mode, selectedTenses, verb, chunkSize });
+  session.items = overrideItems || buildItems({ mode, tense, verb, chunkSize });
 
   if (session.items.length === 0) {
-    showToast('No conjugations found. Check your tense selection and verb data.');
+    showToast('No conjugations found for the selected options.');
     return;
   }
 
@@ -1200,16 +1160,10 @@ function renderQuestion(item) {
   document.getElementById('qTense').textContent      = label;
   document.getElementById('qPerson').textContent     = personLabel;
   document.getElementById('qMastered').textContent   = mastered ? '★ Mastered' : '';
-  document.getElementById('qStats').textContent      = `Seen: ${data.times_seen} · Correct: ${data.times_correct} · Streak: ${data.streak}`;
+  document.getElementById('qStats').textContent      = `Seen: ${data.times_seen} | Correct: ${data.times_correct} | Streak: ${data.streak}`;
 
   document.getElementById('feedbackBox').className = 'feedback-box hidden';
   document.getElementById('advanceBar').className  = 'advance-bar hidden';
-
-  // Hide Next buttons
-  document.getElementById('btnNext').classList.add('hidden');
-  const mcqNR = document.getElementById('mcqNextRow');
-  mcqNR.classList.add('hidden');
-  mcqNR.classList.remove('visible');
 
   const input = document.getElementById('answerInput');
   input.value    = '';
@@ -1220,7 +1174,7 @@ function renderQuestion(item) {
   btnSubmit.disabled = false;
   btnShow.disabled   = false;
 
-  // Auxiliary hint
+  // Auxiliary hint (FIX #3: correct detection)
   const hint = document.getElementById('auxiliaryHint');
   if (COMPOUND_TENSES.includes(item.tense)) {
     const aux = detectAuxiliary(item.tense, personIdx, item.answer);
@@ -1306,10 +1260,8 @@ function submitAnswer(rawAnswer) {
   if (result !== 'wrong') session.correctCount++;
   if (result === 'wrong') {
     session.wrongBuffer.push(item);
-    const entry = { infinitive: item.infinitive, tense: item.tense, person: item.person, correct: item.answer, typed: userRaw, ts: Date.now() };
-    session.mistakes.push(entry);
-    mistakeHistory.push(entry);
-    saveMistakeHistory();
+    // FIX #12: record mistake
+    session.mistakes.push({ infinitive: item.infinitive, tense: item.tense, person: item.person, correct: item.answer, typed: userRaw });
   }
 
   // FIX #7: highlight MCQ buttons
@@ -1339,13 +1291,11 @@ function showAnswer() {
   document.getElementById('btnSubmit').disabled   = true;
   document.getElementById('btnShowAnswer').disabled = true;
 
+  // Apply a small penalty (lighter than a full wrong)
   srsUpdate(item.infinitive, item.tense, item.person, 'wrong');
   session.qCount++;
   session.wrongBuffer.push(item);
-  const shownEntry = { infinitive: item.infinitive, tense: item.tense, person: item.person, correct: item.answer, typed: '(shown)', ts: Date.now() };
-  session.mistakes.push(shownEntry);
-  mistakeHistory.push(shownEntry);
-  saveMistakeHistory();
+  session.mistakes.push({ infinitive: item.infinitive, tense: item.tense, person: item.person, correct: item.answer, typed: '(shown)' });
 
   const box = document.getElementById('feedbackBox');
   box.className = 'feedback-box feedback-warn';
@@ -1394,31 +1344,19 @@ function showFeedback(result, item, personIdx) {
 function triggerAdvance(delayMs, type) {
   const bar  = document.getElementById('advanceBar');
   const fill = document.getElementById('advanceFill');
-
-  if (session.autoAdvance) {
-    // Auto-advance: show countdown bar
-    bar.className  = 'advance-bar';
-    fill.className = `advance-fill fill-${type}`;
-    fill.style.transition = `width ${delayMs}ms linear`;
-    fill.style.width = '100%';
+  bar.className  = 'advance-bar';
+  fill.className = `advance-fill fill-${type}`;
+  fill.style.transition = `width ${delayMs}ms linear`;
+  // force reflow so transition starts from 100%
+  fill.style.width = '100%';
+  requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => { fill.style.width = '0%'; });
+      fill.style.width = '0%';
     });
-    clearTimeout(advanceTimer);
-    advanceTimer = setTimeout(() => {
-      if (session.mode !== 'micro') nextQuestion();
-    }, delayMs);
-  } else {
-    // Manual advance: hide countdown bar, show Next button
-    bar.className = 'advance-bar hidden';
-    if (session.practiceType === 'write') {
-      document.getElementById('btnNext').classList.remove('hidden');
-    } else {
-      const row = document.getElementById('mcqNextRow');
-      row.classList.remove('hidden');
-      row.classList.add('visible');
-    }
-  }
+  });
+  setTimeout(() => {
+    if (session.mode !== 'micro') nextQuestion();
+  }, delayMs);
 }
 
 function updateProgress() {
@@ -1472,11 +1410,7 @@ function endSession() {
 let microState = {};
 
 function startMicro() {
-  // Pick first selected tense (or random from defaults)
-  const tenses = session.selectedTenses && session.selectedTenses.length > 0
-    ? session.selectedTenses
-    : DEFAULT_TENSES;
-  const tense = tenses[Math.floor(Math.random() * tenses.length)];
+  const tense = session.tense;
   let verb = session.verb ? verbs.find(v => v.infinitive === session.verb) : null;
   if (!verb) verb = verbs[Math.floor(Math.random() * verbs.length)];
   if (!verb || !verb[tense]) {
@@ -1570,8 +1504,7 @@ function submitMicro() {
 }
 
 function nextMicro() {
-  const tenses = session.selectedTenses && session.selectedTenses.length > 0 ? session.selectedTenses : DEFAULT_TENSES;
-  const tense = tenses[Math.floor(Math.random() * tenses.length)];
+  const tense = session.tense || TENSES[Math.floor(Math.random() * 6)];
   let nextVerb;
 
   if (session.verb) {
@@ -1762,6 +1695,15 @@ function showToast(msg, duration = 3500) {
 }
 
 function refreshUI() {
+  const selTense = document.getElementById('selTense');
+  selTense.innerHTML = '<option value="">-- all tenses --</option>';
+  const availTenses = TENSES.filter(t => verbs.some(v => v[t]));
+  availTenses.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = TENSE_LABELS[t] || t;
+    selTense.appendChild(opt);
+  });
+
   const selVerb = document.getElementById('selVerb');
   selVerb.innerHTML = '<option value="">-- all verbs --</option>';
   verbs.forEach(v => {
@@ -1772,308 +1714,136 @@ function refreshUI() {
   });
 
   document.getElementById('verbCount').textContent = `${verbs.length} verb(s) loaded`;
+  // FIX #86: update header too
   document.getElementById('headerVerbCount').textContent = verbs.length;
   renderStats();
 }
 
 function renderStats() {
-  renderStatsOverview();
-  renderStatsTenses();
-  renderStatsVerbs();
-  renderStatsHistory();
-}
-
-function renderStatsOverview() {
-  const el = document.getElementById('statsOverview');
+  const el = document.getElementById('statsContent');
   if (!el) return;
 
-  let totalItems = 0, masteredTotal = 0, totalSeen = 0, totalCorrect = 0;
+  let totalItems = 0, masteredTotal = 0;
   verbs.forEach(v => {
     TENSES.forEach(t => {
       if (!v[t]) return;
       PERSONS.forEach(p => {
         totalItems++;
-        const d = srsGet(v.infinitive, t, p);
-        totalSeen    += d.times_seen;
-        totalCorrect += d.times_correct;
         if (isMastered(v.infinitive, t, p)) masteredTotal++;
       });
     });
   });
   const overallPct = totalItems ? Math.round(masteredTotal / totalItems * 100) : 0;
-  const accuracy   = totalSeen  ? Math.round(totalCorrect / totalSeen * 100) : 0;
 
-  el.innerHTML = `
-    <h2>Overall Progress</h2>
-    <div class="stats-big-numbers">
-      <div class="stat-big"><span class="stat-big-value">${masteredTotal}</span><span class="stat-big-label">Mastered</span></div>
-      <div class="stat-big"><span class="stat-big-value">${overallPct}%</span><span class="stat-big-label">of items</span></div>
-      <div class="stat-big"><span class="stat-big-value">${totalSeen}</span><span class="stat-big-label">Total answers</span></div>
-      <div class="stat-big"><span class="stat-big-value">${accuracy}%</span><span class="stat-big-label">Accuracy</span></div>
-      <div class="stat-big"><span class="stat-big-value">${mistakeHistory.length}</span><span class="stat-big-label">Mistakes logged</span></div>
-    </div>
-    <p style="font-size:0.82rem;color:var(--text-muted)">
-      An item is considered mastered once its SRS weight drops below ${MASTERY_WEIGHT} (seen at least ${MASTERY_MIN_SEEN} times).
-      Your progress is automatically saved in this browser.
-    </p>`;
-}
-
-function renderStatsTenses() {
-  const el = document.getElementById('statsTenses');
-  if (!el) return;
-
-  const rows = TENSES.filter(t => verbs.some(v => v[t])).map(t => {
-    let tm = 0, tt = 0, seen = 0, correct = 0;
+  // Per-tense mastery bars
+  const tenseRows = TENSES.filter(t => verbs.some(v => v[t])).map(t => {
+    let tm = 0, tt = 0;
     verbs.forEach(v => {
       if (!v[t]) return;
-      PERSONS.forEach(p => {
-        tt++;
-        const d = srsGet(v.infinitive, t, p);
-        seen += d.times_seen; correct += d.times_correct;
-        if (isMastered(v.infinitive, t, p)) tm++;
-      });
+      PERSONS.forEach(p => { tt++; if (isMastered(v.infinitive, t, p)) tm++; });
     });
     const pct = tt ? Math.round(tm / tt * 100) : 0;
-    const acc = seen ? Math.round(correct / seen * 100) : 0;
-    const tag = ORIGINAL_TENSES.has(t)
-      ? '<span style="font-size:0.7rem;color:#2d7a50;font-weight:bold">✦ orig</span>'
-      : '<span style="font-size:0.7rem;color:#c05010;font-weight:bold">⊕ comp</span>';
-    return `<tr>
-      <td>${TENSE_LABELS[t] || t} ${tag}</td>
-      <td>${tm}/${tt}</td>
-      <td><div class="tense-track" style="min-width:60px"><div class="tense-fill" style="width:${pct}%"></div></div></td>
-      <td style="font-family:var(--mono)">${pct}%</td>
-      <td style="font-family:var(--mono)">${acc}%</td>
-    </tr>`;
+    return `<div class="tense-row">
+      <span class="tense-name">${TENSE_LABELS[t] || t}</span>
+      <div class="tense-track"><div class="tense-fill" style="width:${pct}%"></div></div>
+      <span class="tense-pct">${pct}%</span>
+    </div>`;
   }).join('');
 
-  el.innerHTML = `
-    <h2>By Tense</h2>
-    <table class="stats-table">
-      <thead><tr><th>Tense</th><th>Mastered</th><th>Progress</th><th>%</th><th>Accuracy</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-}
-
-function renderStatsVerbs() {
-  const el = document.getElementById('statsVerbs');
-  if (!el) return;
-
+  // Per-verb table
   const rows = verbs.map(v => {
-    let vm = 0, vt = 0, seen = 0, correct = 0;
+    let vm = 0, vt = 0;
     TENSES.forEach(t => {
       if (!v[t]) return;
-      PERSONS.forEach(p => {
-        vt++;
-        const d = srsGet(v.infinitive, t, p);
-        seen += d.times_seen; correct += d.times_correct;
-        if (isMastered(v.infinitive, t, p)) vm++;
-      });
+      PERSONS.forEach(p => { vt++; if (isMastered(v.infinitive, t, p)) vm++; });
     });
     const pct = vt ? Math.round(vm / vt * 100) : 0;
-    const acc = seen ? Math.round(correct / seen * 100) : 0;
     return `<tr>
-      <td><strong>${escapeHtml(v.infinitive)}</strong></td>
-      <td style="font-size:0.78rem;color:var(--text-muted)">${escapeHtml(v.english || '')}</td>
+      <td>${escapeHtml(v.infinitive)}</td>
       <td>${vm}/${vt}</td>
-      <td><div class="tense-track" style="min-width:50px"><div class="tense-fill" style="width:${pct}%"></div></div></td>
-      <td style="font-family:var(--mono)">${acc}%</td>
+      <td><span class="stats-bar" style="width:${pct}px" title="${pct}%"></span></td>
     </tr>`;
   }).join('');
 
   el.innerHTML = `
-    <h2>By Verb</h2>
-    <table class="stats-table">
-      <thead><tr><th>Verb</th><th>English</th><th>Mastered</th><th>Progress</th><th>Accuracy</th></tr></thead>
+    <div class="stats-summary">
+      <span class="stat-pill">Total items: ${totalItems}</span>
+      <span class="stat-pill">Mastered: ${masteredTotal} (${overallPct}%)</span>
+    </div>
+    <div class="tense-stats">${tenseRows}</div>
+    <table class="stats-table" style="margin-top:1rem">
+      <thead><tr><th>Verb</th><th>Mastered</th><th>Progress</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
-}
-
-function renderStatsHistory() {
-  const el = document.getElementById('statsHistory');
-  if (!el) return;
-
-  if (mistakeHistory.length === 0) {
-    el.innerHTML = '<h2>Mistake History</h2><p style="color:var(--text-muted);font-size:0.88rem">No mistakes recorded yet.</p>';
-    return;
-  }
-
-  // Most recent 100, reversed (newest first)
-  const recent = [...mistakeHistory].reverse().slice(0, 100);
-
-  // Most-missed verbs summary
-  const counts = {};
-  mistakeHistory.forEach(m => {
-    const k = m.infinitive;
-    counts[k] = (counts[k] || 0) + 1;
-  });
-  const top5 = Object.entries(counts).sort((a,b) => b[1]-a[1]).slice(0,5);
-
-  const topHtml = top5.map(([inf, n]) =>
-    `<span class="stat-pill">${escapeHtml(inf)}: ${n}✗</span>`
-  ).join(' ');
-
-  const rows = recent.map(m => {
-    const d = new Date(m.ts);
-    const time = `${d.getDate()}/${d.getMonth()+1} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
-    return `<tr>
-      <td>${escapeHtml(m.infinitive)}</td>
-      <td>${TENSE_LABELS[m.tense] || m.tense} · ${m.person}</td>
-      <td class="history-correct">${escapeHtml(m.correct)}</td>
-      <td class="history-wrong">${escapeHtml(m.typed)}</td>
-      <td style="font-size:0.75rem;color:var(--text-muted)">${time}</td>
-    </tr>`;
-  }).join('');
-
-  el.innerHTML = `
-    <h2>Mistake History <span style="font-size:0.78rem;color:var(--text-muted);font-weight:normal">(last ${recent.length} of ${mistakeHistory.length})</span></h2>
-    <div class="stats-summary" style="margin-bottom:0.75rem">${topHtml}</div>
-    <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem">Most-missed verbs shown above. Full log below (newest first).</p>
-    <table class="history-table">
-      <thead><tr><th>Verb</th><th>Tense · Person</th><th>Correct</th><th>You typed</th><th>When</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="btn-row" style="margin-top:0.75rem">
-      <button onclick="if(confirm('Clear all mistake history?')){mistakeHistory=[];saveMistakeHistory();renderStatsHistory();}" class="btn-danger">Clear history</button>
-    </div>`;
-}
-
-// ─── Tense picker builder ─────────────────────────────────────────────────────
-function buildTensePicker() {
-  const container = document.getElementById('tensePicker');
-  if (!container) return;
-  container.innerHTML = '';
-
-  const savedKey = 'frenchSRS_tenses';
-  let saved;
-  try { saved = JSON.parse(localStorage.getItem(savedKey)); } catch(_) {}
-  const active = new Set(Array.isArray(saved) ? saved : DEFAULT_TENSES);
-
-  TENSES.forEach(t => {
-    const label = document.createElement('label');
-    label.className = 'tense-check-label ' + (ORIGINAL_TENSES.has(t) ? 'is-original' : 'is-compound');
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = t;
-    cb.checked = active.has(t);
-    cb.addEventListener('change', () => {
-      const checked = Array.from(container.querySelectorAll('input:checked')).map(c => c.value);
-      localStorage.setItem(savedKey, JSON.stringify(checked));
-    });
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(TENSE_LABELS[t] || t));
-    container.appendChild(label);
-  });
-}
-
-function setTensePickerAll(mode) {
-  const cbs = document.querySelectorAll('#tensePicker input[type=checkbox]');
-  cbs.forEach(cb => {
-    if (mode === 'all')      cb.checked = true;
-    else if (mode === 'none') cb.checked = false;
-    else if (mode === 'original') cb.checked = ORIGINAL_TENSES.has(cb.value);
-    else if (mode === 'compound') cb.checked = !ORIGINAL_TENSES.has(cb.value);
-  });
-  const checked = Array.from(cbs).filter(c => c.checked).map(c => c.value);
-  localStorage.setItem('frenchSRS_tenses', JSON.stringify(checked));
 }
 
 // ─── DOM event wiring ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadSRS();
   verbs = BUILTIN_VERBS.map(v => ({ ...v }));
-  buildTensePicker();
   refreshUI();
 
-  // Dark mode
+  // Dark mode (FIX: persist preference)
   const savedDark = localStorage.getItem('frenchSRS_dark') === '1';
   if (savedDark) document.body.classList.add('dark');
   document.getElementById('btnDarkMode').textContent = savedDark ? '☀️' : '🌙';
+
   document.getElementById('btnDarkMode').addEventListener('click', () => {
     const isDark = document.body.classList.toggle('dark');
     document.getElementById('btnDarkMode').textContent = isDark ? '☀️' : '🌙';
     localStorage.setItem('frenchSRS_dark', isDark ? '1' : '0');
   });
 
-  // Tense picker quick-select buttons
-  document.getElementById('btnSelectAllTenses').addEventListener('click', () => setTensePickerAll('all'));
-  document.getElementById('btnSelectNone').addEventListener('click',       () => setTensePickerAll('none'));
-  document.getElementById('btnSelectOriginal').addEventListener('click',   () => setTensePickerAll('original'));
-  document.getElementById('btnSelectCompound').addEventListener('click',   () => setTensePickerAll('compound'));
-
-  // Mode selector — show/hide chunk size and verb selector
+  // Mode selector
   const selMode = document.getElementById('selMode');
   selMode.addEventListener('change', updateModeVisibility);
+
   function updateModeVisibility() {
     const m = selMode.value;
-    document.getElementById('rowTensePicker').style.display = (m === 'auxiliary') ? 'none' : '';
-    document.getElementById('rowVerb').style.display   = (m === 'byVerb' || m === 'micro') ? '' : 'none';
-    document.getElementById('rowChunk').style.display  = (m === 'byTense') ? '' : 'none';
+    document.getElementById('rowTense').style.display  = (m === 'byTense' || m === 'micro') ? '' : 'none';
+    document.getElementById('rowVerb').style.display   = (m === 'byVerb'  || m === 'micro') ? '' : 'none';
+    document.getElementById('rowChunk').style.display  = m === 'byTense' ? '' : 'none';
   }
   updateModeVisibility();
 
   // Start
   document.getElementById('btnStart').addEventListener('click', () => startSession());
 
-  // Quick session
+  // Quick session (FIX: practice 10 weakest)
   document.getElementById('btnQuickSession').addEventListener('click', () => {
     const items = buildWeakestItems(10);
     if (items.length === 0) { showToast('No SRS data yet — start a regular session first.'); return; }
-    Object.assign(session, {
-      mode: 'mixed', selectedTenses: [...DEFAULT_TENSES], verb: '',
-      qLimit: 0, timeLimit: 0,
-      strictAccents: document.getElementById('chkAccents').checked,
-      practiceType: document.getElementById('selPractice').value,
-      autoAdvance: document.getElementById('chkAutoAdvance').checked,
-      qCount: 0, correctCount: 0, wrongBuffer: [], submitted: false, mistakes: [],
-      items, queue: shuffle([...items]),
-    });
+    session.mode = 'mixed';
+    session.tense = '';
+    session.verb = '';
+    session.qLimit = 0;
+    session.timeLimit = 0;
+    session.strictAccents = document.getElementById('chkAccents').checked;
+    session.practiceType = document.getElementById('selPractice').value;
+    session.qCount = 0;
+    session.correctCount = 0;
+    session.wrongBuffer = [];
+    session.submitted = false;
+    session.mistakes = [];
+    session.items = items;
+    session.queue = shuffle([...items]);
     showScreen('screenPractice');
     updateProgress();
     nextQuestion();
     startTimer();
   });
 
-  // Write mode submit + keys
+  // Write mode submit
   document.getElementById('btnSubmit').addEventListener('click', () => submitAnswer());
   document.getElementById('answerInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); submitAnswer(); }
     if (e.key === 'Escape') { document.getElementById('answerInput').value = ''; }
   });
 
-  // Manual Next button (write mode)
-  document.getElementById('btnNext').addEventListener('click', () => {
-    document.getElementById('btnNext').classList.add('hidden');
-    clearTimeout(advanceTimer);
-    nextQuestion();
-  });
-
-  // Manual Next button (MCQ mode)
-  document.getElementById('btnNextMCQ').addEventListener('click', () => {
-    const row = document.getElementById('mcqNextRow');
-    row.classList.add('hidden');
-    row.classList.remove('visible');
-    clearTimeout(advanceTimer);
-    nextQuestion();
-  });
-
-  // Space = next in manual mode
-  document.addEventListener('keydown', e => {
-    if (e.key === ' ' && e.target === document.body) {
-      if (!session.autoAdvance && session.submitted) {
-        e.preventDefault();
-        const nw = document.getElementById('btnNext');
-        const nm = document.getElementById('btnNextMCQ');
-        if (!nw.classList.contains('hidden')) { nw.click(); }
-        else if (nm.classList.contains('visible')) { nm.click(); }
-      }
-    }
-  });
-
-  // Show answer
+  // FIX #10: show answer button
   document.getElementById('btnShowAnswer').addEventListener('click', showAnswer);
 
-  // MCQ keyboard 1-4
+  // FIX #8: keyboard 1-4 for MCQ
   document.addEventListener('keydown', e => {
     if (document.getElementById('screenPractice').classList.contains('hidden')) return;
     if (session.practiceType !== 'mcq') return;
@@ -2105,13 +1875,15 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnMicroNext').addEventListener('click', nextMicro);
   document.getElementById('btnMicroEnd').addEventListener('click', endSession);
 
-  // Accent toolbars
+  // Accent toolbar — practice screen
   document.querySelectorAll('#accentBar .accent-btn').forEach(btn => {
     btn.addEventListener('mousedown', e => {
-      e.preventDefault();
+      e.preventDefault(); // prevent blur of answer input
       insertAccent(btn.dataset.char, document.getElementById('answerInput'));
     });
   });
+
+  // Accent toolbar — micro screen
   document.querySelectorAll('#accentBarMicro .micro-accent').forEach(btn => {
     btn.addEventListener('mousedown', e => {
       e.preventDefault();
@@ -2148,7 +1920,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Main tabs
+  // Tabs
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -2160,15 +1932,5 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Stats sub-tabs
-  document.querySelectorAll('.stats-tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.stats-tab-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      document.querySelectorAll('.stats-panel').forEach(p => p.classList.add('hidden'));
-      const stabId = 'stats' + btn.dataset.stab.charAt(0).toUpperCase() + btn.dataset.stab.slice(1);
-      document.getElementById(stabId).classList.remove('hidden');
-    });
-  });
-
+  showScreen('screenSetup');
 });

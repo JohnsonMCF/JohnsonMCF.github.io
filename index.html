@@ -43,16 +43,21 @@
               <option value="byTense">By Tense</option>
               <option value="byVerb">By Verb</option>
               <option value="mixed">Mixed</option>
-              <option value="auxiliary">Auxiliary Training (être/avoir)</option>
+              <option value="auxiliary">Auxiliary Training</option>
               <option value="micro">Micro: all 6 persons</option>
             </select>
           </div>
 
-          <div class="form-row" id="rowTense">
-            <label for="selTense">Tense</label>
-            <select id="selTense">
-              <option value="">-- loading --</option>
-            </select>
+          <!-- Tense picker grid -->
+          <div id="rowTensePicker" class="form-row-block">
+            <label class="block-label">Tenses <span class="block-label-hint">(pick one or more)</span></label>
+            <div id="tensePicker" class="tense-picker"></div>
+            <div class="tense-picker-actions">
+              <button type="button" id="btnSelectAllTenses" class="btn-tiny">All</button>
+              <button type="button" id="btnSelectNone" class="btn-tiny">None</button>
+              <button type="button" id="btnSelectOriginal" class="btn-tiny">Originals</button>
+              <button type="button" id="btnSelectCompound" class="btn-tiny">Compounds</button>
+            </div>
           </div>
 
           <div class="form-row" id="rowVerb">
@@ -64,14 +69,14 @@
 
           <div class="form-row" id="rowChunk">
             <label for="inChunk">Verb chunk size</label>
-            <input id="inChunk" type="number" value="15" min="1" max="86" />
+            <input id="inChunk" type="number" value="15" min="1" max="200" />
           </div>
 
           <div class="form-row">
             <label for="selPractice">Practice type</label>
             <select id="selPractice">
-              <option value="write">Write (text input)</option>
-              <option value="mcq">Multiple choice (MCQ)</option>
+              <option value="write">Write</option>
+              <option value="mcq">Multiple choice</option>
             </select>
           </div>
 
@@ -88,7 +93,13 @@
           <div class="form-row">
             <label for="chkAccents">Strict accents</label>
             <input id="chkAccents" type="checkbox" checked />
-            <span class="form-hint">Uncheck to accept answers without accents</span>
+            <span class="form-hint">Uncheck to allow unaccented answers</span>
+          </div>
+
+          <div class="form-row">
+            <label for="chkAutoAdvance">Auto-advance</label>
+            <input id="chkAutoAdvance" type="checkbox" />
+            <span class="form-hint">Off = use Next button; On = auto-advance after delay</span>
           </div>
 
           <div class="btn-row">
@@ -99,14 +110,15 @@
         <div class="card">
           <h2>Quick Help</h2>
           <p class="help-text">
-            <strong>By Tense</strong> &mdash; one tense, multiple verbs.<br>
-            <strong>By Verb</strong> &mdash; all tenses for one verb.<br>
-            <strong>Mixed</strong> &mdash; random tense &amp; verb.<br>
-            <strong>Auxiliary</strong> &mdash; focus on être and avoir.<br>
+            <strong>By Tense</strong> &mdash; practice selected tense(s) across verbs.<br>
+            <strong>By Verb</strong> &mdash; all selected tenses for one verb.<br>
+            <strong>Mixed</strong> &mdash; random mix from selected tenses &amp; verbs.<br>
+            <strong>Auxiliary</strong> &mdash; être and avoir only.<br>
             <strong>Micro</strong> &mdash; fill all 6 persons at once.<br><br>
             <kbd>Enter</kbd> submits &nbsp;
             <kbd>Esc</kbd> clears &nbsp;
-            <kbd>1–4</kbd> for MCQ choices
+            <kbd>Space</kbd> next &nbsp;
+            <kbd>1–4</kbd> MCQ
           </p>
           <div class="quick-start-box">
             <button id="btnQuickSession" class="btn-accent">⚡ Practice 10 weakest items</button>
@@ -118,10 +130,27 @@
 
     <!-- Data tab -->
     <div id="tabData" class="tab-panel hidden">
+
+      <div class="card">
+        <h2>What is this tab?</h2>
+        <p class="help-text">
+          Here you can add your own verbs and manage your saved progress.<br><br>
+          <strong>Upload / Paste</strong> &mdash; add extra verbs from a CSV or Excel file. Each row is one verb.<br>
+          <strong>Export progress</strong> &mdash; downloads a JSON file with all your SRS scores. Use this to back up your progress or transfer it to another browser or device.<br>
+          <strong>Restore from JSON</strong> &mdash; loads a previously exported backup file.<br>
+          <strong>Reset SRS</strong> &mdash; wipes all your scores and starts fresh. Export first if you want to keep anything.
+        </p>
+      </div>
+
       <div class="card">
         <h2>Upload CSV or XLSX</h2>
         <p class="help-text">
-          Columns: <code>infinitive, english, present_je, present_tu, ...</code>
+          Your file needs these columns:<br>
+          <code>infinitive</code> &nbsp;·&nbsp; <code>english</code><br><br>
+          Then one column per person per tense, named like:<br>
+          <code>present_je</code>, <code>present_tu</code>, <code>present_il</code>, <code>present_nous</code>, <code>present_vous</code>, <code>present_ils</code><br><br>
+          Use the same pattern for other tenses: <code>imparfait_je</code>, <code>passe_compose_je</code>, <code>futur_simple_je</code>, etc.<br>
+          Any tenses you leave blank are simply skipped.
         </p>
         <div class="btn-row">
           <label>
@@ -133,7 +162,7 @@
 
       <div class="card">
         <h2>Paste CSV text</h2>
-        <textarea id="pasteArea" placeholder="Paste CSV here&#10;infinitive,english,present_je,..."></textarea>
+        <textarea id="pasteArea" placeholder="Paste CSV here&#10;infinitive,english,present_je,present_tu,..."></textarea>
         <div class="btn-row">
           <button id="btnPasteImport" class="btn-secondary">Import pasted CSV</button>
         </div>
@@ -141,6 +170,7 @@
 
       <div class="card">
         <h2>Backup &amp; Restore</h2>
+        <p class="help-text">Your progress is automatically saved in this browser (localStorage). Use Export/Restore to move it to another device.</p>
         <p id="verbCount" class="verb-count">0 verb(s) loaded</p>
         <div class="btn-row">
           <button id="btnExport" class="btn-secondary">Export progress (JSON)</button>
@@ -153,10 +183,16 @@
 
     <!-- Stats tab -->
     <div id="tabStats" class="tab-panel hidden">
-      <div class="card">
-        <h2>Mastery Statistics</h2>
-        <div id="statsContent">Loading&hellip;</div>
+      <div class="stats-tabs">
+        <button class="stats-tab-btn active" data-stab="overview">Overview</button>
+        <button class="stats-tab-btn" data-stab="tenses">By Tense</button>
+        <button class="stats-tab-btn" data-stab="verbs">By Verb</button>
+        <button class="stats-tab-btn" data-stab="history">Mistake History</button>
       </div>
+      <div id="statsOverview" class="stats-panel card"></div>
+      <div id="statsTenses"   class="stats-panel card hidden"></div>
+      <div id="statsVerbs"    class="stats-panel card hidden"></div>
+      <div id="statsHistory"  class="stats-panel card hidden"></div>
     </div>
 
   </div><!-- /screenSetup -->
@@ -203,7 +239,6 @@
     </div>
 
     <div id="feedbackBox" class="feedback-box hidden"></div>
-    <!-- advance countdown bar (inside feedback) -->
     <div id="advanceBar" class="advance-bar hidden"><div id="advanceFill" class="advance-fill"></div></div>
 
     <!-- Write mode -->
@@ -220,22 +255,24 @@
       <div class="btn-row">
         <button id="btnSubmit" class="btn-primary">Submit</button>
         <button id="btnShowAnswer" class="btn-secondary">Show Answer</button>
+        <button id="btnNext" class="btn-primary hidden">Next →</button>
       </div>
     </div>
 
     <!-- MCQ mode -->
     <div id="mcqOptions" class="mcq-options hidden" aria-label="Answer choices"></div>
+    <div id="mcqNextRow" class="btn-row hidden" style="margin-top:0.5rem">
+      <button id="btnNextMCQ" class="btn-primary">Next →</button>
+    </div>
 
   </div><!-- /screenPractice -->
 
 
   <!-- ===== MICRO SCREEN ===== -->
   <div id="screenMicro" class="screen hidden">
-
     <div class="card">
       <h2 id="microTitle"></h2>
       <div id="microInputs"></div>
-      <!-- Accent toolbar for micro -->
       <div class="accent-bar" id="accentBarMicro">
         <span class="accent-label">Accents:</span>
         <button class="accent-btn micro-accent" data-char="é">é</button>
@@ -259,14 +296,12 @@
         <button id="btnMicroEnd" class="btn-secondary">End Session</button>
       </div>
     </div>
-
-  </div><!-- /screenMicro -->
+  </div>
 
 
   <!-- ===== SUMMARY SCREEN ===== -->
   <div id="screenSummary" class="screen hidden">
     <div class="summary-box" id="summaryText"></div>
-    <!-- Mistakes review -->
     <div id="mistakesReview" class="card hidden" style="margin-top:1rem">
       <h2>Mistakes This Session</h2>
       <div id="mistakesList"></div>
@@ -275,9 +310,8 @@
       <button id="btnRestartSession" class="btn-secondary">Restart Same Session</button>
       <button id="btnBackToSetup" class="btn-primary">Back to Setup</button>
     </div>
-  </div><!-- /screenSummary -->
+  </div>
 
-  <!-- Inline toast for non-blocking messages -->
   <div id="toast" class="toast hidden"></div>
 
 </main>

@@ -2171,5 +2171,4 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  showScreen('screenSetup');
 });
